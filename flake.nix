@@ -47,28 +47,14 @@
             pname = "AltTab";
             inherit version;
             src = alt-tab-src;
-            nativeBuildInputs = [ xcode ];
+            nativeBuildInputs = [
+              xcode
+              pkgs.python3
+            ];
             # BSD stat lacks -c, which nixpkgs' fixupPhase needs.
             dontFixup = true;
 
             buildPhase = ''
-              # Overrides the repo's per-dev config (debug.xcconfig
-              # includes local.xcconfig when present). Ad-hoc signing
-              # avoids the "Local Self-Signed" login-keychain
-              # certificate and Darwin TeamID.
-              mkdir -p config
-              cat >config/local.xcconfig <<XCCONFIG
-              CODE_SIGN_IDENTITY = -
-              CURRENT_PROJECT_VERSION = ${version}
-              APPCENTER_SECRET =
-              OTHER_SWIFT_FLAGS = $(inherited) -disable-sandbox
-              // Debug DWARF embeds the build dir path, which changes
-              // each run (nix uses
-              // /nix/var/nix/builds/nix-<pid>-<rand>), making the
-              // output non-deterministic.
-              DEBUG_INFORMATION_FORMAT = none
-              XCCONFIG
-
               export DEVELOPER_DIR='${xcode}/Contents/Developer'
               unset SDKROOT
 
@@ -77,8 +63,9 @@
               # NSHomeDirectory() ignores $HOME, so CFFIXED_USER_HOME
               # must be set instead
               export HOME="$TMPDIR/.home"
-              export CFFIXED_USER_HOME="$HOME"
               mkdir -p "$HOME/Library/Caches"
+              export CFFIXED_USER_HOME="$HOME"
+              derived_data="$NIX_BUILD_TOP/DerivedData"
 
               export PATH="''${PATH:+$PATH:}/usr/bin"
               # Xcode sandboxes SPM package resolution and plugin
@@ -86,22 +73,78 @@
               # environments 26.3's raw ld64 lacks driver-style flags
               # (-Xlinker, etc.); linking through the clang driver fixes
               # SPM package targets.
+              envs=(
+                PATH="$PATH"
+                HOME="$HOME"
+                CFFIXED_USER_HOME="$CFFIXED_USER_HOME"
+                TMPDIR="$TMP_DIR"
+                DEVELOPER_DIR="$DEVELOPER_DIR"
+                LANG=C
+                LC_ALL=C
+                TZ=UTC
+              )
               xcodebuild_args=(
                 $DEVELOPER_DIR/usr/bin/xcodebuild
                 -project alt-tab-macos.xcodeproj
                 -scheme Debug
                 -configuration Debug
-                -derivedDataPath DerivedData
-                LD="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+                -derivedDataPath "$derived_data"
+                CODE_SIGN_IDENTITY=-
+                CURRENT_PROJECT_VERSION='${version}'
+                APPCENTER_SECRET=
+                DEBUG_INFORMATION_FORMAT=none
+                OTHER_CODE_SIGN_FLAGS=--timestamp=none
+                OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox'
+                ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
+                LD=$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
                 -IDEPackageSupportDisableManifestSandbox=1
                 -IDEPackageSupportDisablePluginExecutionSandbox=1
               )
-              "''${xcodebuild_args[@]}"
+              (
+                cd "$src"
+                env -i "''${envs[@]}" "''${xcodebuild_args[@]}"
+              )
             '';
 
             installPhase = ''
-              mkdir -p $out/Applications
-              cp -R DerivedData/Build/Products/Debug/AltTab.app "$out/Applications/"
+              mkdir -p "$out/Applications"
+              app="$out/Applications/AltTab.app"
+              cp -R "$derived_data/Build/Products/Debug/AltTab.app" "$app"
+              chmod -R u+w "$app"
+
+              find "$app" -type f | while read -r m; do
+                if file "$m" | grep -q Mach-O; then
+                  strip -x "$m"
+                fi
+              done
+
+              find "$app" -type f | while read -r m; do
+                if file "$m" | grep -q Mach-O; then
+                  for rp in $(otool -l "$m" | sed -n 's/^[[:space:]]*path \(.*\/DerivedData\/Build\/Products\/Debug\/PackageFrameworks\).*/\1/p'); do
+                    install_name_tool -delete_rpath "$rp" "$m"
+                  done
+                fi
+              done
+
+              find "$app" -type f | while read -r m; do
+                codesign --remove-signature "$m" >/dev/null 2>&1 || true
+              done
+              find "$app" -depth -name _CodeSignature -type d -exec rm -rf {} +
+              codesign --remove-signature "$app" >/dev/null 2>&1 || true
+
+              find "$app" -type f | while read -r m; do
+                if file "$m" | grep -q "Mach-O 64-bit"; then
+                  python3 '${./canonicalize-macho.py}' "$m"
+                fi
+              done
+
+              # Sparkle's compiled permission-prompt UI uses two
+              # versioned NIB archives. ibtool can reorder their keyed
+              # archive objects between builds, so install tracked
+              # byte-stable copies.
+              nib_dir="$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/SUUpdatePermissionPrompt.nib"
+              cp '${./canonical-nibs/keyedobjects-101300.nib}' "$nib_dir/keyedobjects-101300.nib"
+              cp '${./canonical-nibs/keyedobjects-110000.nib}' "$nib_dir/keyedobjects-110000.nib"
             '';
 
             meta = with pkgs.lib; {
