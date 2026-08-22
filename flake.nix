@@ -41,15 +41,27 @@
             else
               pkgs.darwin.xcode_26_3;
           version = "unstable-" + alt-tab-src.shortRev;
+          removeX86OnlyBinaries =
+            lib.optionalString (system != "x86_64-darwin")
+              ''
+                find "$app/Contents/Frameworks" -type f | while read -r m; do
+                  if file "$m" | grep -q Mach-O; then
+                    archs="$(lipo -archs "$m" 2>/dev/null || true)"
+                    if [[ $archs = x86_64 ]]; then
+                      rm "$m"
+                    fi
+                  fi
+                done
+              '';
         in
         {
           alt-tab = pkgs.stdenv.mkDerivation {
             pname = "AltTab";
             inherit version;
             src = alt-tab-src;
-            nativeBuildInputs = [
+            nativeBuildInputs = with pkgs; [
               xcode
-              pkgs.python3
+              python3
             ];
             # BSD stat lacks -c, which nixpkgs' fixupPhase needs.
             dontFixup = true;
@@ -112,6 +124,8 @@
               cp -R "$derived_data/Build/Products/Debug/AltTab.app" "$app"
               chmod -R u+w "$app"
 
+              ${removeX86OnlyBinaries}
+
               find "$app" -type f | while read -r m; do
                 if file "$m" | grep -q Mach-O; then
                   strip -x "$m"
@@ -145,6 +159,8 @@
               nib_dir="$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/SUUpdatePermissionPrompt.nib"
               cp '${./canonical-nibs/keyedobjects-101300.nib}' "$nib_dir/keyedobjects-101300.nib"
               cp '${./canonical-nibs/keyedobjects-110000.nib}' "$nib_dir/keyedobjects-110000.nib"
+
+              codesign --force --deep --sign - --timestamp=none "$app"
             '';
 
             meta = with pkgs.lib; {

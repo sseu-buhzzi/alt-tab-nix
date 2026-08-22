@@ -39,10 +39,10 @@ LC_DYLD_INFO = 0x22
 LC_DYLD_INFO_ONLY = 0x80000022
 LC_DYLD_CHAINED_FIXUPS = 0x80000034
 
+# LC_ID_DYLIB names the image itself; it is not a dependency ordinal.
 DYLIB_CMDS = {
     LC_LOAD_DYLIB,
     LC_LOAD_WEAK_DYLIB,
-    LC_ID_DYLIB,
     LC_LOAD_UPWARD_DYLIB,
     LC_REEXPORT_DYLIB,
 }
@@ -482,6 +482,5 @@ def process(path):
 
 if __name__ == "__main__":
     for p in sys.argv[1:]:
-        print("canonicalizing %s" % p)
+        print(f"canonicalizing {p}")
         process(p)
-
