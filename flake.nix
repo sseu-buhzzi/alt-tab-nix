@@ -106,6 +106,12 @@
                 APPCENTER_SECRET=
                 DEBUG_INFORMATION_FORMAT=none
                 OTHER_CODE_SIGN_FLAGS=--timestamp=none
+                # ld64 with LC_DYLD_CHAINED_FIXUPS (deployment target >= 12.0)
+                # emits duplicate bind slots in __DATA_CONST,__const and picks
+                # which duplicate the objc/msgSend stubs load from
+                # nondeterministically, so the same sources produce different
+                # bytes. Classic dyld info has no such freedom; keep it.
+                OTHER_LDFLAGS='$(inherited) -Wl,-no_fixup_chains'
                 OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox'
                 ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
                 LD=$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
