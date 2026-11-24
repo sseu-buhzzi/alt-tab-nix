@@ -17,7 +17,11 @@ produce equal OUTPUT bytes:
        streams are relocated to EOF (appended, aligned to 8) and the old slab
        is zeroed; the LC's offsets/sizes are patched.
      - indirect symbol table (LC_DYSYMTAB): in place, length is fixed.
-     - chained fixups (LC_DYLD_CHAINED_FIXUPS): in place, length is fixed.
+     - chained fixups (LC_DYLD_CHAINED_FIXUPS): the fixup words in the pages
+       hold an index into the import table, not a dylib ordinal, so nothing
+       in the pages changes. The dylib ordinal lives in `lib_ordinal` of each
+       `dyld_chained_import*` entry; that table is remapped in place.
+     - N_UNDF symbols in LC_SYMTAB's n_desc use `n_desc`'s high byte.
   3. Replace every LC_UUID with a hash of the (uuid-less) file.
 """
 
@@ -257,48 +261,55 @@ def process(path):
         old_to_new = {id(x): n for n, x in enumerate(ordered)}
         perm = [old_to_new[id(x)] for x in dylibs]  # old_idx -> new_idx
 
-        # ---- 0. rewrite ordinals in chained fixups (in place, fixed width) ----
+        # ---- 0. rewrite dylib ordinals in the chained-fixups import table ----
+        # LC_DYLD_CHAINED_FIXUPS (what ld64 emits from deployment target macOS
+        # 12 on) has no bind opcodes. The words encoded in the pages hold an
+        # *import index*, not a dylib ordinal, so they do not depend on the
+        # LC_LOAD_DYLIB order at all and never need rewriting. What does depend
+        # on it is `lib_ordinal` on every `dyld_chained_import*` entry
+        # (mach-o/fixup-chains.h). Remap that table in place: the entry width
+        # never changes, so nothing shifts.
         for cmd, off, size in cmds:
             if cmd == LC_DYLD_CHAINED_FIXUPS:
-                dataoff, datasize = struct.unpack_from("<QQ", d, off + 8)
-                base = dataoff
-                starts_off = struct.unpack_from("<L", d, base + 8)[0]
-                seg_count = struct.unpack_from("<L", d, base + starts_off)[0]
-                for s in range(seg_count):
-                    so = struct.unpack_from("<L", d, base + starts_off + 4 + 4 * s)[0]
-                    if so == 0:
-                        continue
-                    so_abs = base + starts_off + so
-                    page_size = struct.unpack_from("<L", d, so_abs + 4)[0]
-                    fmt = struct.unpack_from("<L", d, so_abs + 8)[0]
-                    page_count = struct.unpack_from("<H", d, so_abs + 20)[0]
-                    if fmt != 1:
-                        continue
-                    for p in range(page_count):
-                        pstart = struct.unpack_from("<H", d, so_abs + 22 + 2 * p)[0]
-                        if pstart == 0xFFFF:
-                            continue
-                        w = so_abs + pstart
-                        while True:
-                            word = struct.unpack_from("<Q", d, w)[0]
-                            bit = word & 3
-                            tag = word & 0xF
-                            if tag in (0x30, 0x31):
-                                ordinal = (word >> 8) & (
-                                    0xFFFFFFFF if tag == 0x30 else 0xFFF
-                                )
-                                neword = remap_ordinal(ordinal, perm)
-                                if neword != ordinal:
-                                    if tag == 0x30:
-                                        word = (word & ~(0xFFFFFFFF << 8)) | (
-                                            neword << 8
-                                        )
-                                    else:
-                                        word = (word & ~(0xFFF << 8)) | (neword << 8)
-                                    struct.pack_into("<Q", d, w, word)
-                            if bit == 0 or w >= dataoff + datasize - 8:
-                                break
-                            w += bit
+                dataoff, datasize = struct.unpack_from("<II", d, off + 8)
+                assert dataoff + datasize <= len(d)
+                (
+                    fixups_version,
+                    _starts_off,
+                    imports_off,
+                    _symbols_off,
+                    imports_count,
+                    imports_format,
+                    _symbols_format,
+                ) = struct.unpack_from("<IIIIIII", d, dataoff)
+                if fixups_version != 0:
+                    raise SystemExit(
+                        "unsupported chained fixups version %d" % fixups_version
+                    )
+                if imports_format == 1:  # DYLD_CHAINED_IMPORT
+                    entry_size, ord_bits = 4, 8
+                elif imports_format == 2:  # DYLD_CHAINED_IMPORT_ADDEND
+                    entry_size, ord_bits = 8, 8
+                elif imports_format == 3:  # DYLD_CHAINED_IMPORT_ADDEND64
+                    entry_size, ord_bits = 16, 16
+                else:
+                    raise SystemExit(
+                        "unsupported chained import format %d" % imports_format
+                    )
+                ord_mask = (1 << ord_bits) - 1
+                for i in range(imports_count):
+                    eoff = dataoff + imports_off + i * entry_size
+                    e = struct.unpack_from("<L", d, eoff)[0]
+                    raw = e & ord_mask
+                    # lib_ordinal is signed; negatives are dyld's special
+                    # ordinals (main executable, flat namespace, ...). Those
+                    # never refer to a load command, so leave them as they are.
+                    ordv = raw - (ord_mask + 1) if raw > ord_mask >> 1 else raw
+                    newv = remap_ordinal(ordv, perm)
+                    if newv != ordv:
+                        struct.pack_into(
+                            "<L", d, eoff, (e & ~ord_mask) | (newv & ord_mask)
+                        )
 
         # ---- 1. rewrite dyld bind/weak/lazy opcode streams (relocate to EOF) ----
         new_tables = b""
