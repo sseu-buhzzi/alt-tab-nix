@@ -3,11 +3,11 @@
     "alt-tab-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1786005610,
-        "narHash": "sha256-bBN2b0I1FMe9/3YhmJOGYX7/KqcyMnkpSB7MV+UrQGk=",
+        "lastModified": 1794908128,
+        "narHash": "sha256-K/fl8Lv9dZStk5Q2BHmYg3H8kY2EPU05tfw6ldYza+U=",
         "owner": "lwouis",
         "repo": "alt-tab-macos",
-        "rev": "081f3ee4014e03557c2ab39e9e168dac308fa49b",
+        "rev": "950c1a4e749aef53637bf2833b4a09328cdbce8e",
         "type": "github"
       },
       "original": {
